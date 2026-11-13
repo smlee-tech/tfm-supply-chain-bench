@@ -1,0 +1,68 @@
+# Dataset and task definitions.
+# Column names follow the public releases as commonly distributed; run
+#   python scripts/inspect_columns.py <dataset>
+# after downloading to confirm them before the first experiment.
+#
+# Rules for every task:
+#   - time_col: when the prediction is made; used for the temporal split and date features.
+#   - leakage_cols: columns only known AFTER the prediction time. They are always dropped
+#     (except in the leakage-injection ablation, which adds them back on purpose).
+#   - drop_cols: personal data, free text, images, URLs. Always dropped.
+#   - id_cols: high-cardinality identifiers. Dropped unless --keep-ids is set (ablation).
+
+datasets:
+  dataco:
+    description: DataCo Smart Supply Chain (order-line level)
+    license: "CHECK before publishing results (record it in README)"
+    files: [DataCoSupplyChainDataset.csv]
+    read_kwargs: {encoding: latin-1}
+    time_col: "order date (DateOrders)"
+    drop_cols:
+      - Customer Email
+      - Customer Password
+      - Customer Fname
+      - Customer Lname
+      - Customer Street
+      - Product Description
+      - Product Image
+    id_cols:
+      - Customer Id
+      - Order Customer Id
+      - Order Id
+      - Order Item Id
+      - Order Item Cardprod Id
+      - Product Card Id
+      - Customer Zipcode
+      - Order Zipcode
+    other_date_cols: ["shipping date (DateOrders)"]
+    tasks:
+      late_delivery:
+        type: classification
+        target: {kind: column, col: Late_delivery_risk}
+        leakage_cols: ["Days for shipping (real)", "Delivery Status", "Order Status", "shipping date (DateOrders)"]
+      shipping_days:
+        type: regression
+        target: {kind: column, col: "Days for shipping (real)"}
+        leakage_cols: [Late_delivery_risk, "Delivery Status", "Order Status", "shipping date (DateOrders)"]
+
+  usaid:
+    description: USAID Supply Chain Shipment Pricing (SCMS delivery history)
+    license: "CHECK before publishing results (record it in README)"
+    files: [SCMS_Delivery_History_Dataset.csv]
+    read_kwargs: {}
+    time_col: "Scheduled Delivery Date"
+    drop_cols: []
+    id_cols: [ID, Project Code, "PQ #", "PO / SO #", "ASN/DN #", Item Description, Molecule/Test Type, Brand, Dosage]
+    other_date_cols: ["PQ First Sent to Client Date", "PO Sent to Vendor Date", "Delivered to Client Date", "Delivery Recorded Date"]
+    tasks:
+      late_delivery:
+        type: classification
+        target: {kind: late_flag, actual: "Delivered to Client Date", planned: "Scheduled Delivery Date"}
+        leakage_cols: ["Delivered to Client Date", "Delivery Recorded Date", "Freight Cost (USD)", "Line Item Insurance (USD)"]
+      freight_cost:
+        type: regression
+        target: {kind: numeric_column, col: "Freight Cost (USD)"}
+        leakage_cols: ["Delivered to Client Date", "Delivery Recorded Date", "Line Item Insurance (USD)"]
+
+  # Planned: Olist Brazilian e-commerce needs a multi-table join (orders, items, sellers,
+  # customers). Check its license (possibly non-commercial) before adding.

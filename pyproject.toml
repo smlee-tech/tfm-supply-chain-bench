@@ -1,0 +1,30 @@
+[project]
+name = "tfmbench"
+version = "0.1.0"
+description = "Benchmarking tabular foundation models against tuned GBDTs on public supply chain data, under random and temporal splits."
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "pandas",
+  "scikit-learn",
+  "pyyaml",
+  "xgboost",
+  "lightgbm",
+  "catboost",
+  "optuna",
+  "matplotlib",
+]
+
+[project.optional-dependencies]
+tfm = ["tabpfn", "tabicl"]
+dev = ["pytest"]
+
+[project.scripts]
+tfmbench = "tfmbench.run:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
