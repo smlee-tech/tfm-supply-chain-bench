@@ -11,7 +11,12 @@ import pandas as pd
 def main(path: str) -> None:
     df = pd.read_csv(path)
     metric = "roc_auc" if df["task_type"].iloc[0] == "classification" else "rmse"
-    agg = df.groupby(["model", "n_train"])[metric].agg(["mean", "std"]).reset_index()
+    # Rolling-origin folds have different training sizes when the cap is not reached,
+    # so group by the requested cap and plot the mean size actually used.
+    df["size"] = df["max_train_rows"].fillna(df["n_train"])
+    agg = (df.groupby(["model", "size"])
+             .agg(n_train=("n_train", "mean"), mean=(metric, "mean"), std=(metric, "std"))
+             .reset_index())
     fig, ax = plt.subplots(figsize=(7, 4.5))
     for model, g in agg.groupby("model"):
         g = g.sort_values("n_train")

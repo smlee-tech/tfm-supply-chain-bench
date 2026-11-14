@@ -3,6 +3,9 @@
 Example:
   tfmbench --dataset dataco --task late_delivery --split temporal \
            --models linear xgboost lightgbm catboost tabpfn tabicl --seeds 0 1 2 3 4
+
+Cost columns: tune_s is the hyperparameter search (0 for untuned models), fit_s the final
+fit, predict_s the test prediction. Use --n-trials 0 for GBDTs at default settings.
 """
 from __future__ import annotations
 
@@ -18,7 +21,7 @@ from . import data as data_mod
 from .metrics import PRIMARY, bootstrap_ci, classification_metrics, regression_metrics
 from .models import REGISTRY, ModelUnavailable, predict_scores, tune
 from .preprocess import categorical_indices, make_preprocessor, to_float
-from .splits import split, subsample, validation_split
+from .splits import make_folds, subsample, validation_split
 
 
 def run_experiment(
@@ -31,58 +34,65 @@ def run_experiment(
     max_train_rows: int | None = None,
     n_trials: int = 50,
     n_boot: int = 200,
+    n_folds: int = 1,
     meta: dict | None = None,
     log=print,
 ) -> pd.DataFrame:
     rows = []
     X, y, t = task.X, task.y.to_numpy(), task.t
     for seed in seeds:
-        train_idx, test_idx = split(split_mode, t, test_size, seed)
-        train_idx = subsample(train_idx, max_train_rows, seed)
-        fit_idx, val_idx = validation_split(train_idx, t, split_mode, val_size, seed)
-        for name in models:
-            spec = REGISTRY[name]
-            pre = make_preprocessor(spec.family, X.iloc[train_idx])
-            cat_idx = categorical_indices(X) if spec.family == "tree" else []
-            try:
-                params = {}
-                if spec.space is not None and n_trials > 0:
-                    pre_tune = make_preprocessor(spec.family, X.iloc[fit_idx])
-                    Xf = to_float(pre_tune.fit_transform(X.iloc[fit_idx]))
-                    Xv = to_float(pre_tune.transform(X.iloc[val_idx]))
-                    params = tune(spec, task.task_type, seed, cat_idx, Xf, y[fit_idx], Xv,
-                                  y[val_idx], n_trials)
-                Xtr = to_float(pre.fit_transform(X.iloc[train_idx]))
-                Xte = to_float(pre.transform(X.iloc[test_idx]))
-                model = spec.build(task.task_type, seed, params, cat_idx)
-                t0 = time.perf_counter()
-                model.fit(Xtr, y[train_idx])
-                fit_s = time.perf_counter() - t0
-                t0 = time.perf_counter()
-                scores = predict_scores(model, Xte, task.task_type)
-                pred_s = time.perf_counter() - t0
-            except ModelUnavailable as e:
-                log(f"[skip] {name}: {e}")
-                continue
+        for fold in make_folds(split_mode, t, task.groups, test_size, seed, n_folds):
+            train_idx = subsample(fold.train, max_train_rows, seed)
+            test_idx = fold.test
+            fit_idx, val_idx = validation_split(train_idx, t, split_mode, val_size, seed,
+                                                task.groups)
+            for name in models:
+                spec = REGISTRY[name]
+                pre = make_preprocessor(spec.family, X.iloc[train_idx])
+                cat_idx = categorical_indices(X) if spec.family == "tree" else []
+                try:
+                    params, tune_s = {}, 0.0
+                    if spec.space is not None and n_trials > 0:
+                        pre_tune = make_preprocessor(spec.family, X.iloc[fit_idx])
+                        Xf = to_float(pre_tune.fit_transform(X.iloc[fit_idx]))
+                        Xv = to_float(pre_tune.transform(X.iloc[val_idx]))
+                        t0 = time.perf_counter()
+                        params = tune(spec, task.task_type, seed, cat_idx, Xf, y[fit_idx], Xv,
+                                      y[val_idx], n_trials)
+                        tune_s = time.perf_counter() - t0
+                    Xtr = to_float(pre.fit_transform(X.iloc[train_idx]))
+                    Xte = to_float(pre.transform(X.iloc[test_idx]))
+                    model = spec.build(task.task_type, seed, params, cat_idx)
+                    t0 = time.perf_counter()
+                    model.fit(Xtr, y[train_idx])
+                    fit_s = time.perf_counter() - t0
+                    t0 = time.perf_counter()
+                    scores = predict_scores(model, Xte, task.task_type)
+                    pred_s = time.perf_counter() - t0
+                except ModelUnavailable as e:
+                    log(f"[skip] {name}: {e}")
+                    continue
 
-            y_te = y[test_idx]
-            if task.task_type == "classification":
-                m = classification_metrics(y_te, scores)
-            else:
-                m = regression_metrics(y_te, scores)
-            pname, pfn = PRIMARY[task.task_type]
-            lo, hi = bootstrap_ci(y_te, scores, pfn, n_boot=n_boot, seed=seed)
-            rows.append({
-                **(meta or {}),
-                "task": task.name, "task_type": task.task_type, "split": split_mode,
-                "model": name, "seed": seed,
-                "n_train": len(train_idx), "n_test": len(test_idx), "n_features": X.shape[1],
-                "fit_s": round(fit_s, 3), "predict_s": round(pred_s, 3),
-                **m, f"{pname}_ci_lo": lo, f"{pname}_ci_hi": hi,
-                "tuned_params": params or None,
-            })
-            log(f"seed={seed} {name:9s} {pname}={m[pname]:.4f} [{lo:.4f}, {hi:.4f}] "
-                f"fit={fit_s:.1f}s")
+                y_te = y[test_idx]
+                if task.task_type == "classification":
+                    m = classification_metrics(y_te, scores)
+                else:
+                    m = regression_metrics(y_te, scores)
+                pname, pfn = PRIMARY[task.task_type]
+                lo, hi = bootstrap_ci(y_te, scores, pfn, n_boot=n_boot, seed=seed)
+                rows.append({
+                    **(meta or {}),
+                    "task": task.name, "task_type": task.task_type, "split": split_mode,
+                    "model": name, "seed": seed, "fold": fold.fold,
+                    "cutoff": fold.cutoff, "max_train_rows": max_train_rows,
+                    "n_train": len(train_idx), "n_test": len(test_idx), "n_features": X.shape[1],
+                    "tune_s": round(tune_s, 3), "fit_s": round(fit_s, 3),
+                    "predict_s": round(pred_s, 3),
+                    **m, f"{pname}_ci_lo": lo, f"{pname}_ci_hi": hi,
+                    "tuned_params": params or None,
+                })
+                log(f"seed={seed} fold={fold.fold} {name:9s} {pname}={m[pname]:.4f} "
+                    f"[{lo:.4f}, {hi:.4f}] tune={tune_s:.1f}s fit={fit_s:.1f}s")
     return pd.DataFrame(rows)
 
 
@@ -90,9 +100,18 @@ def summarize(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
     metric = PRIMARY[df["task_type"].iloc[0]][0]
-    g = df.groupby(["split", "model", "n_train"])[[metric, "fit_s"]]
-    out = g.agg(["mean", "std"]).round(4)
-    return out
+    # Seeds first, folds second: under the temporal split every seed sees the same test
+    # rows, so the spread over seeds says nothing about how stable a result is over time.
+    per_fold = df.groupby(["split", "model", "fold"]).agg(
+        m=(metric, "mean"), s=(metric, "std"), tune_s=("tune_s", "mean"), fit_s=("fit_s", "mean"))
+    out = per_fold.groupby(["split", "model"]).agg(**{
+        metric: ("m", "mean"),
+        "std_over_folds": ("m", "std"),
+        "std_over_seeds": ("s", "mean"),
+        "tune_s": ("tune_s", "mean"),
+        "fit_s": ("fit_s", "mean"),
+    })
+    return out.round(4)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -101,7 +120,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--data-dir", default="data/raw")
     ap.add_argument("--dataset", required=True)
     ap.add_argument("--task", required=True)
-    ap.add_argument("--split", choices=["random", "temporal"], default="temporal")
+    ap.add_argument("--split", choices=["random", "grouped", "temporal"], default="temporal",
+                    help="random: rows shuffled; grouped: whole groups (e.g. orders) shuffled;\n"
+                         "temporal: train on the past, test on the future")
+    ap.add_argument("--n-folds", type=int, default=3,
+                    help="temporal split only: number of rolling-origin cutoffs")
     ap.add_argument("--models", nargs="+", default=["linear", "xgboost", "lightgbm", "catboost"])
     ap.add_argument("--seeds", nargs="+", type=int, default=[0, 1, 2, 3, 4])
     ap.add_argument("--test-size", type=float, default=0.2)
@@ -128,7 +151,7 @@ def main(argv: list[str] | None = None) -> int:
     meta = {"dataset": args.dataset, "keep_ids": args.keep_ids, "inject_leak": args.inject_leak}
     df = run_experiment(task, args.split, args.models, args.seeds, args.test_size,
                         max_train_rows=args.max_train_rows, n_trials=args.n_trials,
-                        n_boot=args.n_boot, meta=meta)
+                        n_boot=args.n_boot, n_folds=args.n_folds, meta=meta)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out, mode="a", header=not out.exists(), index=False)

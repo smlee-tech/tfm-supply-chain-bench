@@ -1,9 +1,11 @@
 # tfm-supply-chain-bench
 
 Do tabular foundation models (TFMs) beat tuned gradient-boosted trees on supply chain
-prediction when the split respects time? This repository benchmarks TabPFN-2.5 and
-TabICL against XGBoost, LightGBM and CatBoost on public supply chain data, under random,
+prediction when the split respects time? This repository benchmarks TabPFN-3.5 and
+TabICLv2 against XGBoost, LightGBM and CatBoost on public supply chain data, under random,
 grouped and temporal splits, and reports where each model wins and where it falls short.
+TabPFN-2.5 is kept as a reference column, to show how much of the gap the newer
+checkpoint closes on the same tasks.
 
 > Status: experiment scaffold. Results will be added as they are produced.
 
@@ -68,26 +70,37 @@ show how much a leak inflates scores.
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"      # baselines + GBDTs + tests
-pip install -e ".[tfm]"      # TabPFN and TabICL (a GPU is strongly recommended)
+pip install -e ".[tfm]"      # tabpfn 10.0.0 and tabicl 2.2.0, pinned (a GPU is strongly recommended)
 pytest -q
 ```
 
-TabPFN-2.5 open weights are for research and non-commercial use; see the
-[Prior Labs model overview](https://docs.priorlabs.ai/models/overview). Its recommended
-range is up to 50,000 training rows, so larger datasets are studied with a learning curve.
+| `--models` name | Model | Checkpoint | Weights license |
+| --- | --- | --- | --- |
+| `tabpfn` | TabPFN-3.5 (main) | `tabpfn-v3.5-20260909`, pinned in `models.py` | [TabPFN-3.5 license](https://huggingface.co/Prior-Labs/tabpfn_3_5/blob/main/LICENSE), non-commercial |
+| `tabpfn-2.5` | TabPFN-2.5 (reference) | pinned in `models.py` | its own non-commercial license, see the [Prior Labs models page](https://docs.priorlabs.ai/models#tabpfn-model-license) |
+| `tabicl` | TabICLv2 | `tabicl-classifier-v2-20260212`, the default of tabicl 2.2.0 | see the [TabICL model page](https://huggingface.co/jingang/TabICL) |
+
+The TabPFN weights are licensed separately from the `tabpfn` package (Apache 2.0), and
+each checkpoint has its own license document, so 3.5 and 2.5 are accepted separately. The
+first run opens a browser to accept the license; on a headless machine set `TABPFN_TOKEN`.
+
+TabPFN-3.5 accepts up to 1,000,000 training rows, and TabPFN-2.5 is recommended up to
+50,000. The commands below still cap training at 50,000 rows so that both checkpoints see
+the same data; how far TabPFN-3.5 goes without the cap on the available GPU has not been
+measured yet.
 
 ## Running
 
 ```bash
 # Main comparison, temporal split, 3 rolling-origin cutoffs x 5 seeds
 tfmbench --dataset olist --task late_delivery --split temporal --n-folds 3 \
-  --models linear xgboost lightgbm catboost tabpfn tabicl --max-train-rows 50000
+  --models linear xgboost lightgbm catboost tabpfn tabpfn-2.5 tabicl --max-train-rows 50000
 
 # Same, grouped and random splits (to measure the split effect in two steps)
 tfmbench --dataset olist --task late_delivery --split grouped \
-  --models linear xgboost lightgbm catboost tabpfn tabicl --max-train-rows 50000
+  --models linear xgboost lightgbm catboost tabpfn tabpfn-2.5 tabicl --max-train-rows 50000
 tfmbench --dataset olist --task late_delivery --split random \
-  --models linear xgboost lightgbm catboost tabpfn tabicl --max-train-rows 50000
+  --models linear xgboost lightgbm catboost tabpfn tabpfn-2.5 tabicl --max-train-rows 50000
 
 # GBDTs at default settings (the no-tuning comparison with the TFMs)
 tfmbench --dataset olist --task late_delivery --split temporal --n-trials 0 \
@@ -109,9 +122,9 @@ python scripts/plot_results.py results/olist_late_delivery_curve.csv
 | Temporal cutoffs | rolling origin: the last 60% of the timeline is cut into 3 consecutive 20% test blocks; each is predicted from everything before it (training window 40%, 60%, 80%) |
 | Validation | 20% of the training window, same split type as the test split |
 | GBDT tuning | Optuna TPE, 50 trials per model on validation (log loss / RMSE), then refit on the full training window; also run untuned (`--n-trials 0`) |
-| TFMs | default settings, no tuning |
+| TFMs | TabPFN-3.5 (main), TabPFN-2.5 (reference) and TabICLv2, each with a pinned checkpoint; default settings, no tuning |
 | Preprocessing | fitted on training data only; categoricals ordinal-encoded for trees and TFMs, one-hot for linear baselines |
-| Categoricals | XGBoost, LightGBM, CatBoost and TabPFN are told which columns are categorical and use their native handling; TabICL receives the codes as they are |
+| Categoricals | XGBoost, LightGBM, CatBoost and TabPFN (3.5 and 2.5) are told which columns are categorical and use their native handling; TabICLv2 receives the codes as they are |
 | Classification metrics | ROC-AUC, log loss, Brier score, expected calibration error (ECE) |
 | Regression metrics | RMSE, MAE, R² |
 | Cost | tuning (`tune_s`), final fit (`fit_s`) and predict (`predict_s`) wall time, hardware recorded |

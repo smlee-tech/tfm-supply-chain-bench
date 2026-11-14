@@ -1,13 +1,16 @@
 """Model registry.
 
 GBDTs are tuned with Optuna on a validation split (same budget for each), then refit on
-the full training window. TFMs run with default settings: no tuning. Optional packages
+the full training window. TFMs run with default settings: no tuning. Every GBDT is told
+which columns are categorical and uses its native categorical handling, as TabPFN does;
+otherwise the ordinal codes would be read as ordered numbers. Optional packages
 (tabpfn, tabicl) are imported lazily; a missing package raises ModelUnavailable and the
 runner skips that model with a message.
 """
 from __future__ import annotations
 
 import inspect
+import os
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -30,9 +33,62 @@ def _device() -> str:
     try:
         import torch
 
-        return "cuda" if torch.cuda.is_available() else "cpu"
+        if torch.cuda.is_available():
+            return "cuda"
+        if os.environ.get("TFMBENCH_DEVICE"):  # e.g. "mps" on Apple silicon, or "cpu"
+            return os.environ["TFMBENCH_DEVICE"]
+        return "cpu"
     except ImportError:
         return "cpu"
+
+
+class _NativeCategorical:
+    """Fit/predict wrapper that hands the categorical columns to a GBDT natively.
+
+    Input is the float matrix from the "tree" preprocessor: categorical columns hold
+    ordinal codes >= 0, and -1 for a category not seen when the encoder was fitted.
+    """
+
+    def __init__(self, model, cat_idx: list[int], lib: str):
+        self.model, self.cat_idx, self.lib = model, list(cat_idx), lib
+
+    def _prep(self, X):
+        X = np.asarray(X, dtype=float)
+        if self.lib == "xgboost":  # negative codes are invalid; NaN means "missing"
+            X = X.copy()
+            block = X[:, self.cat_idx]
+            block[block < 0] = np.nan
+            X[:, self.cat_idx] = block
+            return X
+        if self.lib == "catboost":  # needs integer (not float) categorical columns
+            import pandas as pd
+
+            df = pd.DataFrame(X)
+            df[self.cat_idx] = df[self.cat_idx].astype(int)
+            return df
+        return X  # lightgbm: negative codes are treated as missing
+
+    def fit(self, X, y):
+        Xp = self._prep(X)
+        if self.lib == "xgboost":
+            types = ["c" if i in set(self.cat_idx) else "q" for i in range(Xp.shape[1])]
+            self.model.set_params(enable_categorical=True, feature_types=types)
+            self.model.fit(Xp, y)
+        elif self.lib == "lightgbm":
+            self.model.fit(Xp, y, categorical_feature=self.cat_idx)
+        else:
+            self.model.fit(Xp, y, cat_features=self.cat_idx)
+        return self
+
+    def predict(self, X):
+        return self.model.predict(self._prep(X))
+
+    def predict_proba(self, X):
+        return self.model.predict_proba(self._prep(X))
+
+
+def _with_categoricals(model, cat_idx, lib: str):
+    return _NativeCategorical(model, cat_idx, lib) if cat_idx else model
 
 
 # ---------- builders: (task_type, seed, params, cat_idx) -> estimator ----------
@@ -52,7 +108,7 @@ def _xgb(task_type, seed, params, cat_idx):
         raise ModelUnavailable("pip install xgboost") from e
     base = dict(tree_method="hist", random_state=seed, n_jobs=-1)
     cls = XGBClassifier if task_type == "classification" else XGBRegressor
-    return cls(**base, **params)
+    return _with_categoricals(cls(**base, **params), cat_idx, "xgboost")
 
 
 def _lgbm(task_type, seed, params, cat_idx):
@@ -62,7 +118,7 @@ def _lgbm(task_type, seed, params, cat_idx):
         raise ModelUnavailable("pip install lightgbm") from e
     base = dict(random_state=seed, verbose=-1, subsample_freq=1)
     cls = LGBMClassifier if task_type == "classification" else LGBMRegressor
-    return cls(**base, **params)
+    return _with_categoricals(cls(**base, **params), cat_idx, "lightgbm")
 
 
 def _catboost(task_type, seed, params, cat_idx):
@@ -72,19 +128,36 @@ def _catboost(task_type, seed, params, cat_idx):
         raise ModelUnavailable("pip install catboost") from e
     base = dict(random_seed=seed, verbose=0, allow_writing_files=False)
     cls = CatBoostClassifier if task_type == "classification" else CatBoostRegressor
-    return cls(**base, **params)
+    return _with_categoricals(cls(**base, **params), cat_idx, "catboost")
 
 
-def _tabpfn(task_type, seed, params, cat_idx):
-    try:
-        from tabpfn import TabPFNClassifier, TabPFNRegressor
-    except ImportError as e:
-        raise ModelUnavailable("pip install tabpfn (see README for weights/license)") from e
-    cls = TabPFNClassifier if task_type == "classification" else TabPFNRegressor
-    kwargs = dict(device=_device(), random_state=seed,
-                  categorical_features_indices=cat_idx or None,
-                  ignore_pretraining_limits=True)
-    return cls(**_filter_kwargs(cls, kwargs))
+def _tabpfn_builder(version: str):
+    """Builder for one pinned TabPFN checkpoint, e.g. "v3.5" or "v2.5".
+
+    The version is always pinned, never left to the package default, so the name in the
+    results stays true when a newer tabpfn release changes its default checkpoint.
+    """
+
+    def build(task_type, seed, params, cat_idx):
+        try:
+            from tabpfn import TabPFNClassifier, TabPFNRegressor
+            from tabpfn.constants import ModelVersion
+        except ImportError as e:
+            raise ModelUnavailable(
+                "pip install tabpfn (see README for weights/license)") from e
+        try:
+            model_version = ModelVersion(version)
+        except ValueError as e:
+            raise ModelUnavailable(
+                f"installed tabpfn has no checkpoint {version}; "
+                'pip install -e ".[tfm]" for the pinned version') from e
+        cls = TabPFNClassifier if task_type == "classification" else TabPFNRegressor
+        kwargs = dict(device=_device(), random_state=seed,
+                      categorical_features_indices=cat_idx or None,
+                      ignore_pretraining_limits=True)
+        return cls.create_default_for_version(model_version, **_filter_kwargs(cls, kwargs))
+
+    return build
 
 
 def _tabicl(task_type, seed, params, cat_idx):
@@ -96,6 +169,7 @@ def _tabicl(task_type, seed, params, cat_idx):
     cls = getattr(tabicl, name, None)
     if cls is None:
         raise ModelUnavailable(f"installed tabicl has no {name}")
+    # checkpoint_version is left at the package default: TabICLv2 in the pinned tabicl 2.2.0
     kwargs = dict(device=_device(), random_state=seed)
     return cls(**_filter_kwargs(cls, kwargs))
 
@@ -150,7 +224,11 @@ REGISTRY: dict[str, ModelSpec] = {
     "xgboost": ModelSpec("xgboost", "tree", _xgb, _space_xgb),
     "lightgbm": ModelSpec("lightgbm", "tree", _lgbm, _space_lgbm),
     "catboost": ModelSpec("catboost", "tree", _catboost, _space_catboost),
-    "tabpfn": ModelSpec("tabpfn", "tree", _tabpfn, None, is_tfm=True),
+    # "tabpfn" is the main TFM (TabPFN-3.5); "tabpfn-2.5" is a reference column that
+    # shows how much the newer checkpoint changed the result on the same task.
+    "tabpfn": ModelSpec("tabpfn", "tree", _tabpfn_builder("v3.5"), None, is_tfm=True),
+    "tabpfn-2.5": ModelSpec("tabpfn-2.5", "tree", _tabpfn_builder("v2.5"), None,
+                            is_tfm=True),
     "tabicl": ModelSpec("tabicl", "tree", _tabicl, None, is_tfm=True),
 }
 

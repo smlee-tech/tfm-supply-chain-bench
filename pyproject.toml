@@ -16,7 +16,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-tfm = ["tabpfn", "tabicl"]
+# Pinned: the default checkpoint changes between releases (tabpfn 10.0.0 -> TabPFN-3.5,
+# tabicl 2.2.0 -> TabICLv2), so the version is part of the experiment.
+tfm = ["tabpfn==10.0.0", "tabicl==2.2.0"]
 dev = ["pytest"]
 
 [project.scripts]

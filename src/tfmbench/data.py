@@ -20,6 +20,7 @@ class Task:
     t: pd.Series  # prediction time, used for temporal splits
     task_type: str  # "classification" or "regression"
     name: str
+    groups: pd.Series | None = None  # rows that belong together (e.g. one order); grouped split
 
 
 def load_config(path: str | Path) -> dict:
@@ -78,6 +79,8 @@ def build_task(
     t = _to_datetime(df[ds_cfg["time_col"]])
     keep = y.notna() & t.notna()
     df, y, t = df[keep], y[keep], t[keep]
+    group_col = ds_cfg.get("group_col")
+    groups = df[group_col].reset_index(drop=True) if group_col else None
 
     leakage = [c for c in tcfg.get("leakage_cols", []) if c in df.columns]
     drop = set(target_sources) | set(ds_cfg.get("drop_cols", []))
@@ -118,4 +121,5 @@ def build_task(
         t=t.reset_index(drop=True),
         task_type=task_type,
         name=task_name,
+        groups=groups,
     )
