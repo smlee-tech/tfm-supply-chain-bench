@@ -57,8 +57,13 @@ python scripts/make_synthetic.py         # synthetic control
 - **Group columns** for the grouped split: customer for Olist (3% of orders are repeat
   customers), `Order Id` for DataCo, order for the synthetic data.
 - **Label delay.** A training order placed just before a cutoff may only be delivered
-  after it, so its label would not be known yet in practice. Olist deliveries take a
-  median of 10 days; no gap is left between train and test yet.
+  after it, so its label would not be known yet in practice. On Olist an on-time label
+  arrives at delivery and a late label when the promised date passes, so the recent orders
+  with a known label are mostly the on-time ones. The default temporal split ignores this
+  (`--label-policy oracle`). `--label-policy known` trains only on labels that have arrived
+  by the cutoff, and `--label-policy gap` also leaves out the last `--label-gap-days`
+  (default 30) before the cutoff. The label time of a task is set by `label_time_cols` in
+  `configs/datasets.yaml`.
 
 **Leakage control.** Every task lists `leakage_cols`: columns only known after the
 prediction time (actual ship date, delivery status, actual freight). They are always
@@ -110,6 +115,9 @@ tfmbench --dataset olist --task late_delivery --split temporal --n-trials 0 \
 bash scripts/learning_curve.sh olist late_delivery           # 500 / 2k / 10k / 50k rows
 tfmbench --dataset olist --task late_delivery --keep-ids     # high-cardinality IDs kept
 tfmbench --dataset olist --task late_delivery --inject-leak  # deliberate leakage
+tfmbench --dataset olist --task late_delivery --label-policy known  # only labels known at the cutoff
+tfmbench --dataset olist --task late_delivery --max-train-rows 10000 --train-sample recent  # latest rows instead of a random sample
+tfmbench --dataset olist --task late_delivery --drop-cols pred_month pred_dayofyear  # without seasonal calendar features
 
 python scripts/plot_results.py results/olist_late_delivery_curve.csv
 ```

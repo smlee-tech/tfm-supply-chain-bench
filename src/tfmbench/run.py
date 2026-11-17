@@ -21,7 +21,8 @@ from . import data as data_mod
 from .metrics import PRIMARY, bootstrap_ci, classification_metrics, regression_metrics
 from .models import REGISTRY, ModelUnavailable, predict_scores, tune
 from .preprocess import categorical_indices, make_preprocessor, to_float
-from .splits import make_folds, subsample, validation_split
+from .splits import (LABEL_POLICIES, TRAIN_SAMPLES, label_available, make_folds, subsample,
+                     validation_split)
 
 
 def run_experiment(
@@ -37,12 +38,19 @@ def run_experiment(
     n_folds: int = 1,
     meta: dict | None = None,
     log=print,
+    label_policy: str = "oracle",
+    label_gap_days: float = 30.0,
+    train_sample: str = "random",
 ) -> pd.DataFrame:
+    if label_policy != "oracle" and split_mode != "temporal":
+        raise ValueError("label_policy applies to the temporal split only.")
     rows = []
     X, y, t = task.X, task.y.to_numpy(), task.t
     for seed in seeds:
         for fold in make_folds(split_mode, t, task.groups, test_size, seed, n_folds):
-            train_idx = subsample(fold.train, max_train_rows, seed)
+            usable = label_available(fold.train, t, task.label_t, fold.cutoff, label_policy,
+                                     label_gap_days)
+            train_idx = subsample(usable, max_train_rows, seed, train_sample, t)
             test_idx = fold.test
             fit_idx, val_idx = validation_split(train_idx, t, split_mode, val_size, seed,
                                                 task.groups)
@@ -85,6 +93,10 @@ def run_experiment(
                     "task": task.name, "task_type": task.task_type, "split": split_mode,
                     "model": name, "seed": seed, "fold": fold.fold,
                     "cutoff": fold.cutoff, "max_train_rows": max_train_rows,
+                    "train_sample": train_sample,
+                    "label_policy": label_policy,
+                    "label_gap_days": label_gap_days if label_policy == "gap" else None,
+                    "train_target_mean": round(float(y[train_idx].mean()), 5),
                     "n_train": len(train_idx), "n_test": len(test_idx), "n_features": X.shape[1],
                     "tune_s": round(tune_s, 3), "fit_s": round(fit_s, 3),
                     "predict_s": round(pred_s, 3),
@@ -134,11 +146,23 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--keep-ids", action="store_true", help="ablation: keep high-cardinality IDs")
     ap.add_argument("--inject-leak", action="store_true",
                     help="ablation: deliberately keep leakage columns")
+    ap.add_argument("--drop-cols", nargs="*", default=[],
+                    help="ablation: feature columns to leave out, e.g. pred_month pred_dayofyear")
+    ap.add_argument("--train-sample", choices=TRAIN_SAMPLES, default="random",
+                    help="how --max-train-rows cuts the training window. random: uniform\n"
+                         "sample (default); recent: the latest rows, as a refreshed context")
+    ap.add_argument("--label-policy", choices=LABEL_POLICIES, default="oracle",
+                    help="temporal split only: which training labels count as known at the\n"
+                         "cutoff. oracle: all (default); known: only labels that have arrived;\n"
+                         "gap: known, and without the last --label-gap-days before the cutoff")
+    ap.add_argument("--label-gap-days", type=float, default=30.0)
     ap.add_argument("--out", default=None,
                     help="default: results/<dataset>_<task>.csv, one file per task, because\n"
                          "classification and regression rows have different columns")
     args = ap.parse_args(argv)
 
+    if args.label_policy != "oracle" and args.split != "temporal":
+        ap.error("--label-policy applies to --split temporal only")
     unknown = [m for m in args.models if m not in REGISTRY]
     if unknown:
         ap.error(f"unknown models: {unknown}; choose from {list(REGISTRY)}")
@@ -148,12 +172,19 @@ def main(argv: list[str] | None = None) -> int:
     raw = data_mod.load_raw(ds_cfg, args.data_dir)
     task = data_mod.build_task(raw, ds_cfg, args.task, keep_ids=args.keep_ids,
                                inject_leak=args.inject_leak)
+    missing = [c for c in args.drop_cols if c not in task.X.columns]
+    if missing:
+        ap.error(f"--drop-cols: not a feature column: {missing}; features are {list(task.X.columns)}")
+    task.X = task.X.drop(columns=args.drop_cols)
     print(f"{args.dataset}/{args.task}: {len(task.y)} rows, {task.X.shape[1]} features")
 
-    meta = {"dataset": args.dataset, "keep_ids": args.keep_ids, "inject_leak": args.inject_leak}
+    meta = {"dataset": args.dataset, "keep_ids": args.keep_ids, "inject_leak": args.inject_leak,
+            "drop_cols": " ".join(sorted(args.drop_cols))}
     df = run_experiment(task, args.split, args.models, args.seeds, args.test_size,
                         max_train_rows=args.max_train_rows, n_trials=args.n_trials,
-                        n_boot=args.n_boot, n_folds=args.n_folds, meta=meta)
+                        n_boot=args.n_boot, n_folds=args.n_folds, meta=meta,
+                        label_policy=args.label_policy, label_gap_days=args.label_gap_days,
+                        train_sample=args.train_sample)
     out = Path(args.out or f"results/{args.dataset}_{args.task}.csv")
     out.parent.mkdir(parents=True, exist_ok=True)
     if out.exists() and list(pd.read_csv(out, nrows=0).columns) != list(df.columns):

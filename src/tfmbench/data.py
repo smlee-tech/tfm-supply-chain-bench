@@ -21,6 +21,7 @@ class Task:
     task_type: str  # "classification" or "regression"
     name: str
     groups: pd.Series | None = None  # rows that belong together (e.g. one order); grouped split
+    label_t: pd.Series | None = None  # when the label becomes known (label_time_cols)
 
 
 def load_config(path: str | Path) -> dict:
@@ -79,6 +80,13 @@ def build_task(
     t = _to_datetime(df[ds_cfg["time_col"]])
     keep = y.notna() & t.notna()
     df, y, t = df[keep], y[keep], t[keep]
+    # The label is known at the earliest of these dates (e.g. delivery, or the promised
+    # date passing without a delivery). Rows with none of them never get a known label.
+    label_cols = tcfg.get("label_time_cols")
+    label_t = None
+    if label_cols:
+        label_t = pd.concat([_to_datetime(df[c]) for c in label_cols], axis=1).min(axis=1)
+        label_t = label_t.reset_index(drop=True)
     group_col = ds_cfg.get("group_col")
     groups = df[group_col].reset_index(drop=True) if group_col else None
 
@@ -133,4 +141,5 @@ def build_task(
         task_type=task_type,
         name=task_name,
         groups=groups,
+        label_t=label_t,
     )

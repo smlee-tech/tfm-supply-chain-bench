@@ -84,16 +84,35 @@ datasets:
     group_col: order_id
     drop_cols: [oracle_p_late]  # the true late probability; a ceiling, never a feature
     id_cols: [order_id, customer_id, supplier_id]
-    other_date_cols: [ship_date]
+    other_date_cols: [ship_date, promised_date]  # promised = order date + scheduled_days
     tasks:
       late_delivery:
         type: classification
         target: {kind: column, col: late}
         leakage_cols: [ship_days, ship_date]
+        label_time_cols: [ship_date, promised_date]
       shipping_days:
         type: regression
         target: {kind: column, col: ship_days}
         leakage_cols: [late, ship_date]
+        label_time_cols: [ship_date]
+
+  nyc311_hpd:
+    description: NYC 311 housing service requests (agency HPD), one row per request (scripts/prepare_nyc311.py)
+    license: "NYC Open Data terms of use; CHECK before publishing results"
+    files: [nyc311_hpd.csv]
+    read_kwargs: {dtype: {zip3: str}}
+    time_col: created_date  # prediction is made when the request is filed
+    drop_cols: []
+    id_cols: [unique_key]
+    other_date_cols: [closed_date, deadline]
+    tasks:
+      slow_14d:  # not closed within 14 days of filing
+        type: classification
+        target: {kind: column, col: slow}
+        leakage_cols: [closed_date]
+        # fast is known when the request is closed; slow is known once the 14 days have passed
+        label_time_cols: [closed_date, deadline]
 
   olist:
     description: Olist Brazilian e-commerce, one row per delivered order (scripts/prepare_olist.py)
@@ -118,7 +137,10 @@ datasets:
         type: classification
         target: {kind: column, col: late}
         leakage_cols: [delivery_days, order_approved_at, order_delivered_carrier_date, order_delivered_customer_date]
+        # on time is known at delivery; late is known once the promised date has passed
+        label_time_cols: [order_delivered_customer_date, order_estimated_delivery_date]
       delivery_days:
         type: regression
         target: {kind: column, col: delivery_days}
         leakage_cols: [late, order_approved_at, order_delivered_carrier_date, order_delivered_customer_date]
+        label_time_cols: [order_delivered_customer_date]

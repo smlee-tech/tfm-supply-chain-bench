@@ -133,9 +133,65 @@ def validation_split(
     return train_idx[tr], train_idx[va]
 
 
-def subsample(idx: np.ndarray, max_rows: int | None, seed: int) -> np.ndarray:
-    """Random subsample of the training window (for learning curves and TFM size limits)."""
+LABEL_POLICIES = ("oracle", "known", "gap")
+
+
+def label_available(
+    train_idx: np.ndarray,
+    t: pd.Series,
+    label_t: pd.Series | None,
+    cutoff: pd.Timestamp,
+    policy: str,
+    gap_days: float = 30.0,
+) -> np.ndarray:
+    """Training rows a model could really use at the cutoff, given when labels arrive.
+
+    A label is not known at prediction time but at label_t (an order is only known to be
+    on time once it is delivered). When that delay depends on the outcome, the rows
+    with a known label shortly before the cutoff are a biased sample.
+
+    - oracle: every row before the cutoff, as if labels were instant (the usual temporal
+      split; optimistic).
+    - known: rows whose label is known before the cutoff. Recent but biased.
+    - gap: as "known", and also without the last gap_days before the cutoff, so that
+      nearly every remaining row has its label. Less biased but older.
+    """
+    if policy not in LABEL_POLICIES:
+        raise ValueError(f"Unknown label policy: {policy}")
+    if policy == "oracle":
+        return train_idx
+    if label_t is None:
+        raise ValueError("This label policy needs label_time_cols for the task in "
+                         "configs/datasets.yaml.")
+    cutoff = pd.Timestamp(cutoff)
+    lt = pd.Series(pd.to_datetime(label_t)).iloc[train_idx]
+    keep = (lt < cutoff).to_numpy()  # NaT compares False: never known
+    if policy == "gap":
+        tt = pd.Series(pd.to_datetime(t)).iloc[train_idx]
+        keep = keep & (tt < cutoff - pd.Timedelta(days=gap_days)).to_numpy()
+    if not keep.any():
+        raise ValueError(f"Label policy {policy!r} leaves no training rows before {cutoff}.")
+    return train_idx[keep]
+
+
+TRAIN_SAMPLES = ("random", "recent")
+
+
+def subsample(idx: np.ndarray, max_rows: int | None, seed: int, how: str = "random",
+              t: pd.Series | None = None) -> np.ndarray:
+    """Cut the training window down to max_rows (learning curves, TFM size limits).
+
+    random: a uniform sample of the window. recent: the max_rows rows with the latest
+    prediction time, i.e. a context refreshed with the newest usable data (needs t).
+    """
+    if how not in TRAIN_SAMPLES:
+        raise ValueError(f"Unknown train sample: {how}")
     if max_rows is None or len(idx) <= max_rows:
         return idx
+    if how == "recent":
+        if t is None:
+            raise ValueError("train sample 'recent' needs the prediction times.")
+        order = np.argsort(pd.Series(pd.to_datetime(t)).iloc[idx].to_numpy(), kind="stable")
+        return np.sort(idx[order[-max_rows:]])
     rng = np.random.default_rng(seed)
     return np.sort(rng.choice(idx, size=max_rows, replace=False))

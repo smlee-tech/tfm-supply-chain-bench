@@ -1,7 +1,8 @@
 import numpy as np
 import pandas as pd
+import pytest
 
-from tfmbench.splits import (grouped_split, make_folds, random_split, subsample,
+from tfmbench.splits import (grouped_split, label_available, make_folds, random_split, subsample,
                              temporal_folds, temporal_split, validation_split)
 
 
@@ -83,3 +84,34 @@ def test_grouped_mode_needs_groups():
     except ValueError:
         return
     raise AssertionError("expected ValueError")
+
+
+def test_label_available_policies():
+    t = pd.Series(pd.date_range("2022-01-01", periods=100, freq="D"))
+    # even rows resolve after 2 days, odd rows after 20 days; one label never arrives
+    label_t = t + pd.to_timedelta(np.where(np.arange(100) % 2 == 0, 2, 20), unit="D")
+    label_t.iloc[10] = pd.NaT
+    cutoff = t.iloc[80]
+    train = np.arange(80)
+
+    assert np.array_equal(label_available(train, t, label_t, cutoff, "oracle"), train)
+
+    known = label_available(train, t, label_t, cutoff, "known")
+    assert (label_t.iloc[known] < cutoff).all() and 10 not in known
+    assert 76 in known and 77 not in known and 61 not in known and 59 in known
+
+    gap = label_available(train, t, label_t, cutoff, "gap", gap_days=30)
+    assert set(gap) <= set(known) and t.iloc[gap].max() < cutoff - pd.Timedelta(days=30)
+
+    with pytest.raises(ValueError):
+        label_available(train, t, None, cutoff, "known")
+
+
+def test_subsample_recent_takes_latest_rows():
+    t = pd.Series(pd.date_range("2022-01-01", periods=100, freq="D")).sample(frac=1, random_state=1)
+    t = t.reset_index(drop=True)
+    idx = np.arange(0, 100, 2)
+    recent = subsample(idx, 10, seed=0, how="recent", t=t)
+    assert len(recent) == 10 and set(recent) <= set(idx)
+    assert t.iloc[recent].min() > t.iloc[np.setdiff1d(idx, recent)].max()
+    assert np.array_equal(subsample(idx, 10, seed=0), subsample(idx, 10, seed=0, how="random"))

@@ -129,3 +129,15 @@ def test_results_file_is_per_task_and_refuses_other_columns(tmp_path, monkeypatc
         assert e.code == 2
     else:
         raise AssertionError("appending regression rows to a classification file must fail")
+
+
+def test_label_policy_drops_unresolved_rows():
+    cfg = {**CFG, "tasks": {"late": {**CFG["tasks"]["late"], "label_time_cols": ["ship_date"]}}}
+    task = build_task(_orders(), cfg, "late")
+    assert task.label_t is not None and (task.label_t >= task.t).all()
+    kw = dict(seeds=[0], n_trials=0, n_boot=10, log=lambda *_: None)
+    oracle = run_experiment(task, "temporal", ["linear"], **kw)
+    known = run_experiment(task, "temporal", ["linear"], label_policy="known", **kw)
+    gap = run_experiment(task, "temporal", ["linear"], label_policy="gap", label_gap_days=30, **kw)
+    assert gap["n_train"].iloc[0] < known["n_train"].iloc[0] < oracle["n_train"].iloc[0]
+    assert known["roc_auc"].notna().all() and gap["label_gap_days"].iloc[0] == 30
