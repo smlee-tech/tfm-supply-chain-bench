@@ -20,3 +20,10 @@ def test_bootstrap_ci_brackets_mean():
     y = np.arange(100, dtype=float)
     lo, hi = bootstrap_ci(y, y, lambda a, b: float(np.mean(a)), n_boot=300)
     assert lo < 49.5 < hi
+
+
+def test_auc_is_not_changed_by_clipping_saturated_scores():
+    from tfmbench.metrics import classification_metrics
+    y = np.array([0, 0, 1, 1])
+    p = np.array([1e-12, 1e-9, 1e-8, 1.0])  # perfectly ranked, three of them below the clip
+    assert classification_metrics(y, p)["roc_auc"] == 1.0

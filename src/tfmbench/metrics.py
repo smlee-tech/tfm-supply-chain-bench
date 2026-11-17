@@ -29,9 +29,12 @@ def expected_calibration_error(y: np.ndarray, p: np.ndarray, n_bins: int = 15) -
 
 
 def classification_metrics(y: np.ndarray, p: np.ndarray) -> dict[str, float]:
-    p = np.clip(np.asarray(p, dtype=float), 1e-7, 1 - 1e-7)
+    raw = np.asarray(p, dtype=float)
+    p = np.clip(raw, 1e-7, 1 - 1e-7)  # log loss needs probabilities away from 0 and 1
     return {
-        "roc_auc": float(roc_auc_score(y, p)),
+        # Ranking uses the unclipped scores: clipping ties every saturated prediction,
+        # which lowers the AUC of an overconfident model and disagrees with bootstrap_ci.
+        "roc_auc": float(roc_auc_score(y, raw)),
         "log_loss": float(log_loss(y, p, labels=[0, 1])),
         "brier": float(brier_score_loss(y, p)),
         "ece": expected_calibration_error(y, p),
