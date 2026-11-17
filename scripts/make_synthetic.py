@@ -8,6 +8,10 @@ checking that the benchmark measures what it claims to, because each effect has 
   --drift 1        the world changes over time (see "Drift" below)
   --n-suppliers    cardinality of the supplier ID, which carries real signal (--keep-ids)
   --order-noise    unexplained delay per order; sets the ceiling (oracle AUC)
+  --spike          short disruptions: every --spike-every days, delays rise for
+                   --spike-length days, most for two carriers drawn anew each time
+  --lead-scale     stretches promised and actual shipping times, and with them the time
+                   until a label is known (on time: at shipping; late: at the promised date)
 
 An order ships as one unit: all its lines share the delay and the label, as in DataCo.
 A random split therefore puts lines with the same label on both sides (group leakage);
@@ -47,8 +51,10 @@ _cdf = np.vectorize(lambda z: 0.5 * (1 + erf(z / sqrt(2))))
 
 
 def generate(n_orders: int, drift: float, n_suppliers: int, order_noise: float,
-             seed: int) -> pd.DataFrame:
+             seed: int, spike: float = 0.0, spike_every: int = 120, spike_length: int = 60,
+             lead_scale: float = 1.0) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
+    rng_spike = np.random.default_rng(seed + 1)  # separate stream: spike=0 leaves the data as before
     days = 3 * 365
     order_day = np.sort(rng.integers(0, days, n_orders))
     u = order_day / days  # position on the timeline, 0..1
@@ -90,8 +96,18 @@ def generate(n_orders: int, drift: float, n_suppliers: int, order_noise: float,
     dist_slope = 0.9 * (1 - 0.4 * drift * late_era[o])
     w = drift * late_era[o]  # carrier ranking reverses in year 3
     carrier_delay = (1 - w) * CARRIER_DELAY[carrier[o]] + w * CARRIER_DELAY[::-1][carrier[o]]
+    # Disruptions: the last spike_length days of every spike_every-day period. All orders
+    # are delayed a little and two carriers a lot; which two changes each time, so a
+    # disruption cannot be learned from the previous ones.
+    period = order_day // spike_every
+    in_spike = (order_day % spike_every) >= (spike_every - spike_length)
+    hit = np.zeros((period.max() + 1, len(CARRIERS)))
+    for k in range(len(hit)):
+        hit[k, rng_spike.choice(len(CARRIERS), 2, replace=False)] = 1.0
+    spike_delay = spike * in_spike * (0.5 + hit[period, carrier])
     line_mean = (
         -0.2
+        + spike_delay[o]
         + dist_slope * np.log(distance[o] / 600)
         + carrier_delay
         + CATEGORY_DELAY[category]
@@ -108,6 +124,10 @@ def generate(n_orders: int, drift: float, n_suppliers: int, order_noise: float,
     # late <=> round(scheduled + extra) > scheduled <=> extra >= 0.5
     oracle = _cdf((mean_extra - 0.5) / order_noise)
 
+    # Stretch the calendar, not the label: late is decided before scaling.
+    late = (ship_days > scheduled).astype(int)
+    scheduled = np.round(lead_scale * scheduled).astype(int)
+    ship_days = np.round(lead_scale * ship_days).astype(int)
     order_date = pd.Timestamp("2022-01-01") + pd.to_timedelta(order_day[o], unit="D")
     return pd.DataFrame({
         "order_id": np.char.add("O", o.astype(str)),
@@ -123,9 +143,10 @@ def generate(n_orders: int, drift: float, n_suppliers: int, order_noise: float,
         "quantity": quantity,
         "weight_kg": weight,
         "unit_price": unit_price,
+        "promised_date": (order_date + pd.to_timedelta(scheduled, unit="D")).strftime("%Y-%m-%d"),
         "ship_date": (order_date + pd.to_timedelta(ship_days, unit="D")).strftime("%Y-%m-%d"),
         "ship_days": ship_days,
-        "late": (ship_days > scheduled).astype(int),
+        "late": late,
         "oracle_p_late": np.round(oracle, 4),
     })
 
@@ -144,11 +165,16 @@ def main() -> None:
     ap.add_argument("--drift", type=float, default=1.0, help="0 = stationary, 1 = default drift")
     ap.add_argument("--n-suppliers", type=int, default=2_000)
     ap.add_argument("--order-noise", type=float, default=0.8)
+    ap.add_argument("--spike", type=float, default=0.0, help="0 = no disruptions")
+    ap.add_argument("--spike-every", type=int, default=120)
+    ap.add_argument("--spike-length", type=int, default=60)
+    ap.add_argument("--lead-scale", type=float, default=1.0)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="data/raw/synthetic_orders.csv")
     args = ap.parse_args()
 
-    df = generate(args.n_orders, args.drift, args.n_suppliers, args.order_noise, args.seed)
+    df = generate(args.n_orders, args.drift, args.n_suppliers, args.order_noise, args.seed,
+                  args.spike, args.spike_every, args.spike_length, args.lead_scale)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out, index=False)
