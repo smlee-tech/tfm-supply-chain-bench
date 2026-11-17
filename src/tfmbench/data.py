@@ -82,6 +82,17 @@ def build_task(
     group_col = ds_cfg.get("group_col")
     groups = df[group_col].reset_index(drop=True) if group_col else None
 
+    # Numeric columns stored as text ("1426", "Weight Captured Separately",
+    # "See DN-304 (ID#:10589)"): keep the number, and keep the kind of note as a small
+    # categorical, instead of letting every distinct numeric string become a category.
+    for col in ds_cfg.get("numeric_text_cols", []):
+        if col not in df.columns or col in target_sources:
+            continue
+        num = pd.to_numeric(df[col], errors="coerce")
+        note = df[col].astype("string").str.replace(r"[\d\W]+", " ", regex=True).str.strip()
+        df[f"{col} (note)"] = note.where(num.isna(), "numeric").fillna("missing").astype(object)
+        df[col] = num
+
     leakage = [c for c in tcfg.get("leakage_cols", []) if c in df.columns]
     drop = set(target_sources) | set(ds_cfg.get("drop_cols", []))
     if not inject_leak:

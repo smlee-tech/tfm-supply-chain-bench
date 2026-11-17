@@ -12,11 +12,13 @@
 #   - group_col: rows with the same value belong together and share (almost) the same
 #     label, e.g. the lines of one order. Used by --split grouped so that no group is on
 #     both sides. It is not a feature unless it is also kept through --keep-ids.
+#   - numeric_text_cols: numeric columns stored as text. Parsed to a number, plus a
+#     "<col> (note)" categorical holding the kind of text found where there was no number.
 
 datasets:
   dataco:
     description: DataCo Smart Supply Chain (order-line level)
-    license: "CHECK before publishing results (record it in README)"
+    license: "CC BY 4.0 as listed on Mendeley Data, version 5 (DOI 10.17632/8gx2fvg2k6.5)"
     files: [DataCoSupplyChainDataset.csv]
     read_kwargs: {encoding: latin-1}
     time_col: "order date (DateOrders)"
@@ -51,8 +53,12 @@ datasets:
 
   usaid:
     description: USAID Supply Chain Shipment Pricing (SCMS delivery history)
-    license: "CHECK before publishing results (record it in README)"
+    # data.usaid.gov dataset a3rc-nmf6. Catalog metadata lists CC BY-ND 4.0 while its rights
+    # note says CC-BY. Until confirmed, treat as no-derivatives: do not redistribute the
+    # file or a modified copy.
+    license: "UNCONFIRMED: CC BY-ND 4.0 per catalog metadata, CC-BY per its rights note"
     files: [SCMS_Delivery_History_Dataset.csv]
+    numeric_text_cols: ["Weight (Kilograms)"]
     read_kwargs: {}
     time_col: "Scheduled Delivery Date"
     group_col: "ASN/DN #"  # one shipment; confirm it is the right unit after downloading

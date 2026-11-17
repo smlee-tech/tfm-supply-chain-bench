@@ -134,7 +134,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--keep-ids", action="store_true", help="ablation: keep high-cardinality IDs")
     ap.add_argument("--inject-leak", action="store_true",
                     help="ablation: deliberately keep leakage columns")
-    ap.add_argument("--out", default="results/results.csv")
+    ap.add_argument("--out", default=None,
+                    help="default: results/<dataset>_<task>.csv, one file per task, because\n"
+                         "classification and regression rows have different columns")
     args = ap.parse_args(argv)
 
     unknown = [m for m in args.models if m not in REGISTRY]
@@ -152,8 +154,11 @@ def main(argv: list[str] | None = None) -> int:
     df = run_experiment(task, args.split, args.models, args.seeds, args.test_size,
                         max_train_rows=args.max_train_rows, n_trials=args.n_trials,
                         n_boot=args.n_boot, n_folds=args.n_folds, meta=meta)
-    out = Path(args.out)
+    out = Path(args.out or f"results/{args.dataset}_{args.task}.csv")
     out.parent.mkdir(parents=True, exist_ok=True)
+    if out.exists() and list(pd.read_csv(out, nrows=0).columns) != list(df.columns):
+        ap.error(f"{out} has different columns (another task type or an older run); "
+                 "choose another --out")
     df.to_csv(out, mode="a", header=not out.exists(), index=False)
     print(summarize(df).to_string())
     print(f"appended {len(df)} rows to {out}")

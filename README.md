@@ -114,6 +114,8 @@ tfmbench --dataset olist --task late_delivery --inject-leak  # deliberate leakag
 python scripts/plot_results.py results/olist_late_delivery_curve.csv
 ```
 
+Results are appended to `results/<dataset>_<task>.csv` unless `--out` is given.
+
 ## Protocol
 
 | Item | Setting |
@@ -134,11 +136,10 @@ Results are reported as they come out, including tasks where TFMs lose.
 
 ## Branches
 
-- `main`: data loading, splits, models, metrics, tests
-- `exp/temporal-split`: main random / grouped / temporal comparison
-- `exp/ablations`: learning curve, categorical, leakage-injection experiments
-
-Each experiment branch is merged into `main` by pull request once its results are final.
+Only `main` exists so far: data loading, splits, models, metrics, tests. Experiments will
+run on their own branches (`exp/temporal-split` for the random / grouped / temporal
+comparison, `exp/ablations` for the learning curve, categorical and leakage-injection
+runs), each merged into `main` by pull request once its results are final.
 
 ## Results
 

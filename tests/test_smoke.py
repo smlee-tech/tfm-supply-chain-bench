@@ -96,3 +96,36 @@ def test_gbdts_use_native_categoricals():
         p = predict_scores(model, X_test, "classification")
         assert ((p[10:] > 0.5) == y[3010:]).mean() > 0.99
         assert isinstance(REGISTRY[name].build("classification", 0, {}, []), type(model.model))
+
+
+def test_numeric_text_column_is_parsed():
+    df = _orders(50)
+    df["weight"] = ["12", "Weight Captured Separately", "See DN-304 (ID#:10589)", "7.5", None] * 10
+    task = build_task(df, {**CFG, "numeric_text_cols": ["weight"]}, "late")
+    assert task.X["weight"].isna().sum() == 30 and task.X["weight"].iloc[0] == 12.0
+    assert set(task.X["weight (note)"]) == {
+        "numeric", "Weight Captured Separately", "See DN ID", "missing"}
+
+
+def test_results_file_is_per_task_and_refuses_other_columns(tmp_path, monkeypatch):
+    import yaml
+
+    from tfmbench.run import main
+
+    (tmp_path / "raw").mkdir()
+    _orders(400).to_csv(tmp_path / "raw" / "orders.csv", index=False)
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text(yaml.safe_dump({"datasets": {"toy": {**CFG, "files": ["orders.csv"]}}}))
+    monkeypatch.chdir(tmp_path)
+    common = ["--config", str(cfg), "--data-dir", "raw", "--dataset", "toy", "--models", "linear",
+              "--seeds", "0", "--split", "grouped", "--n-trials", "0", "--n-boot", "10"]
+    assert main([*common, "--task", "late"]) == 0
+    assert main([*common, "--task", "days"]) == 0
+    assert (tmp_path / "results" / "toy_late.csv").exists()
+    assert (tmp_path / "results" / "toy_days.csv").exists()
+    try:
+        main([*common, "--task", "days", "--out", "results/toy_late.csv"])
+    except SystemExit as e:
+        assert e.code == 2
+    else:
+        raise AssertionError("appending regression rows to a classification file must fail")
