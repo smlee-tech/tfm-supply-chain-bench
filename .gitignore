@@ -6,3 +6,5 @@ __pycache__/
 *.egg-info/
 .venv/
 .ipynb_checkpoints/
+# Results behind a published table are committed
+!results/label_delay/
