@@ -8,3 +8,5 @@ __pycache__/
 .ipynb_checkpoints/
 # Results behind a published table are committed
 !results/label_delay/
+results/label_delay/.done/
+results/label_delay/*.log

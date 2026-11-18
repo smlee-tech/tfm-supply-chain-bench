@@ -114,6 +114,24 @@ datasets:
         # fast is known when the request is closed; slow is known once the 14 days have passed
         label_time_cols: [closed_date, deadline]
 
+  criteo_attribution:
+    description: Criteo attribution data, one row per clicked ad impression (scripts/prepare_criteo.py)
+    license: "CC BY-NC-SA 4.0 (non-commercial), Criteo on Hugging Face: criteo/criteo-attribution-dataset"
+    files: [criteo_attribution.csv]
+    read_kwargs: {}
+    time_col: click_date  # prediction is made at the click; dates are on an arbitrary origin
+    group_col: uid
+    drop_cols: []
+    id_cols: [uid]
+    other_date_cols: [conversion_date, deadline]
+    tasks:
+      converted_7d:  # a conversion within 7 days of the click
+        type: classification
+        target: {kind: column, col: converted}
+        leakage_cols: [conversion_date]
+        # a conversion is known when it happens; no conversion is known once the 7 days have passed
+        label_time_cols: [conversion_date, deadline]
+
   olist:
     description: Olist Brazilian e-commerce, one row per delivered order (scripts/prepare_olist.py)
     license: "CC BY-NC-SA 4.0 on the original Kaggle release (non-commercial); confirm before publishing"

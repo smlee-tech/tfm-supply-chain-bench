@@ -27,7 +27,7 @@ checkpoint closes on the same tasks.
 ## Data
 
 ```bash
-bash scripts/download_data.sh            # DataCo and Olist into data/raw/ (not committed)
+bash scripts/download_data.sh            # DataCo, Olist and Criteo into data/raw/ (not committed)
 python scripts/make_synthetic.py         # synthetic control
 ```
 
@@ -36,6 +36,7 @@ python scripts/make_synthetic.py         # synthetic control
 | Olist Brazilian e-commerce (`olist`) | 96,470 delivered orders, 2016-09 to 2018-08 | `delivery_days` | `late_delivery` | main real dataset |
 | DataCo Smart Supply Chain (`dataco`) | 180,519 order lines, 2015-01 to 2018-01 | `shipping_days` | `late_delivery` | caution case, see below |
 | NYC 311 housing requests (`nyc311_hpd`) | 98,305 requests to HPD, 2020 to 2021 (a 10% sample) | none | `slow_14d` | second dataset for the label-delay study, not supply chain |
+| Criteo attribution (`criteo_attribution`) | 118,875 ad clicks over 31 days (a 2% sample of users) | none | `converted_7d` | third dataset for the label-delay study, not supply chain |
 | Synthetic order lines (`synth`) | set by `--n-orders` | `shipping_days` | `late_delivery` | control with known truth |
 | USAID shipment pricing, SCMS (`usaid`) | not downloaded | `freight_cost` | `late_delivery` | on hold: the official host no longer resolves |
 
@@ -61,6 +62,13 @@ python scripts/make_synthetic.py         # synthetic control
   date is filled for 0.4% of rows), so it is a constructed task. It is here because a fast
   request is labelled when it closes and a slow one only after 14 days, the same label
   mechanism as on Olist.
+- **Criteo attribution.** `scripts/prepare_criteo.py` keeps the clicked impressions of the
+  [Criteo Attribution Modeling for Bidding Dataset](https://huggingface.co/datasets/criteo/criteo-attribution-dataset)
+  (CC BY-NC-SA 4.0, non-commercial). The task `converted_7d` asks, at the click, whether a
+  conversion follows within 7 days. Here the positive label arrives first (at the
+  conversion) and the negative one after 7 days, the opposite direction to Olist. The
+  timestamps are relative, so the dates sit on an arbitrary origin, and the 7-day window is
+  set by this repository.
 - **Synthetic.** A control with a known generating process, not evidence about real
   supply chains: `--drift 0` gives a stationary world where the grouped and temporal
   splits should agree, and the printed oracle AUC is the ceiling any model can approach.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Download the public datasets into data/raw/ (not committed).
-# Usage: bash scripts/download_data.sh [dataco] [olist]     (default: both)
+# Usage: bash scripts/download_data.sh [dataco] [olist] [criteo]     (default: all)
 # Check each dataset's license (README, "Data") before publishing results.
 set -euo pipefail
 RAW=data/raw
@@ -24,4 +24,12 @@ if want olist "$@"; then
       "https://huggingface.co/datasets/bulutttt/olist-raw-data/resolve/main/$f.csv"
   done
   python scripts/prepare_olist.py --src "$RAW/olist" --out "$RAW/olist_orders.csv"
+fi
+
+if want criteo "$@"; then
+  # Criteo Attribution Modeling for Bidding Dataset, CC BY-NC-SA 4.0 (653 MB).
+  mkdir -p "$RAW/criteo_attribution"
+  curl -fL --retry 8 --retry-all-errors -C - -o "$RAW/criteo_attribution/criteo_attribution_dataset.tsv.gz" \
+    "https://huggingface.co/datasets/criteo/criteo-attribution-dataset/resolve/main/criteo_attribution_dataset.tsv.gz"
+  python scripts/prepare_criteo.py
 fi
