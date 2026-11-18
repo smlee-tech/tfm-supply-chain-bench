@@ -10,3 +10,4 @@ __pycache__/
 !results/label_delay/
 results/label_delay/.done/
 results/label_delay/*.log
+results/label_delay/queue_*.sh
