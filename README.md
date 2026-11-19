@@ -170,8 +170,8 @@ merged into `main` by pull request once its results are final.
 
 ## Results
 
-The main comparison (all models, tuned GBDTs, 5 seeds, random / grouped / temporal) is not
-done. The one result so far is exploratory.
+The main comparison (all models, 50-trial tuning, 5 seeds, random / grouped / temporal) is
+not done. The one result so far is exploratory.
 
 ### Label delay: recent rows with a known label are a biased context (exploratory)
 
@@ -179,62 +179,131 @@ done. The one result so far is exploratory.
 recent rows, and a GBDT by retraining on them. But a row can only be used once its label
 has arrived, and on these tasks the arrival time depends on the outcome: an on-time order
 is labelled at delivery, a late one only when the promised date has passed. What does the
-usual temporal split, which treats every label before the cutoff as known, hide?
+usual temporal split, which treats every label before the cutoff as known, hide, and how
+should the context be filled instead?
 
 **Setup.** Rolling-origin temporal split with 10 cutoffs (each test block is 6% of the
-rows), 10,000 training rows, 3 seeds, no tuning (LightGBM at default settings). The grid is
+rows), 10,000 training rows, seeds 0 to 2. TabPFN-3.5 and the linear model run at default
+settings; LightGBM runs at default settings and tuned with 20 Optuna trials (fewer than the
+50 of the protocol above, for time). The grid is
 
 - label policy: `oracle` (every label before the cutoff, the usual split), `known` (only
-  labels that had arrived by the cutoff), `gap` (as `known`, and without the last 30 days
-  before the cutoff on Olist, 14 days on NYC 311);
+  labels that had arrived by the cutoff), `gap` (as `known`, and without the last days
+  before the cutoff: 30 on Olist, 14 on NYC 311, 7 on Criteo, the label delay of each task);
 - training sample: the 10,000 most `recent` usable rows, or a `random` 10,000 of all usable rows;
-- features: all, or without the two calendar features that encode the position in the
-  year (`pred_month`, `pred_dayofyear`).
+- features: all; without the two calendar features that encode the position in the year
+  (`pred_month`, `pred_dayofyear`); without any calendar feature (also `pred_dayofweek`).
 
-Mean ROC-AUC over the 10 cutoffs, most recent 10,000 rows (worst cutoff in brackets):
+On Olist and NYC 311 the slow outcome is labelled last; on Criteo the positive outcome (a
+conversion) is labelled first and the negative one after 7 days.
 
-| Dataset | Model | Features | oracle | known | gap |
-| --- | --- | --- | --- | --- | --- |
-| Olist | TabPFN-3.5 | all | 0.734 (0.660) | 0.619 (0.445) | 0.702 (0.603) |
-| Olist | TabPFN-3.5 | no month / day-of-year | 0.733 (0.625) | 0.715 (0.654) | 0.699 (0.575) |
-| Olist | LightGBM | all | 0.688 (0.607) | 0.617 (0.443) | 0.657 (0.566) |
-| Olist | LightGBM | no month / day-of-year | 0.693 (0.559) | 0.677 (0.608) | 0.656 (0.535) |
-| Olist | linear | all | 0.703 (0.618) | 0.692 (0.583) | 0.699 (0.627) |
-| NYC 311 | TabPFN-3.5 | all | 0.802 (0.639) | 0.720 (0.513) | 0.800 (0.641) |
-| NYC 311 | TabPFN-3.5 | no month / day-of-year | 0.800 (0.639) | 0.799 (0.640) | 0.798 (0.640) |
-| NYC 311 | LightGBM | all | 0.789 (0.628) | 0.699 (0.516) | 0.784 (0.626) |
-| NYC 311 | LightGBM | no month / day-of-year | 0.791 (0.626) | 0.790 (0.625) | 0.791 (0.631) |
-| NYC 311 | linear | all | 0.796 (0.639) | 0.776 (0.638) | 0.794 (0.639) |
+**1. The most recent rows.** Mean ROC-AUC over the 10 cutoffs with the 10,000 most recent
+usable rows (worst cutoff in brackets), and mean log loss:
+
+| Dataset | Model | Features | oracle | known | gap | log loss oracle / known / gap |
+| --- | --- | --- | --- | --- | --- | --- |
+| Olist | TabPFN-3.5 | all | 0.734 (0.660) | 0.619 (0.445) | 0.702 (0.603) | 0.238 / 0.312 / 0.267 |
+| Olist | TabPFN-3.5 | no month / day-of-year | 0.733 (0.625) | 0.715 (0.654) | 0.699 (0.575) | 0.253 / 0.266 / 0.275 |
+| Olist | LightGBM, tuned | all | 0.702 (0.623) | 0.657 (0.552) | 0.677 (0.582) | 0.242 / 0.466 / 0.285 |
+| Olist | LightGBM, tuned | no month / day-of-year | 0.702 (0.586) | 0.680 (0.605) | 0.668 (0.533) | 0.255 / 0.395 / 0.284 |
+| Olist | LightGBM, default | all | 0.688 (0.607) | 0.617 (0.443) | 0.657 (0.566) | 0.264 / 0.482 / 0.317 |
+| Olist | linear | all | 0.703 (0.618) | 0.692 (0.583) | 0.699 (0.627) | 0.282 / 0.354 / 1.231 |
+| NYC 311 | TabPFN-3.5 | all | 0.802 (0.639) | 0.720 (0.513) | 0.800 (0.641) | 0.427 / 0.931 / 0.434 |
+| NYC 311 | TabPFN-3.5 | no month / day-of-year | 0.800 (0.639) | 0.799 (0.640) | 0.798 (0.640) | 0.432 / 0.436 / 0.437 |
+| NYC 311 | LightGBM, tuned | all | 0.797 (0.637) | 0.706 (0.313) | 0.796 (0.637) | 0.433 / 1.002 / 0.437 |
+| NYC 311 | LightGBM, tuned | no month / day-of-year | 0.798 (0.635) | 0.797 (0.637) | 0.796 (0.636) | 0.437 / 0.441 / 0.440 |
+| NYC 311 | LightGBM, default | all | 0.789 (0.628) | 0.699 (0.516) | 0.784 (0.626) | 0.453 / 1.619 / 0.457 |
+| NYC 311 | linear | all | 0.796 (0.639) | 0.776 (0.638) | 0.794 (0.639) | 0.441 / 0.694 / 0.470 |
+| Criteo | TabPFN-3.5 | all | 0.856 (0.837) | 0.703 (0.634) | 0.822 (0.805) | 0.198 / 5.715 / 0.217 |
+| Criteo | TabPFN-3.5 | no month / day-of-year | 0.856 (0.836) | 0.656 (0.603) | 0.819 (0.804) | 0.198 / 7.118 / 0.219 |
+| Criteo | LightGBM, tuned | all | 0.822 (0.803) | 0.665 (0.570) | 0.798 (0.777) | 0.215 / 2.506 / 0.227 |
+| Criteo | LightGBM, tuned | no month / day-of-year | 0.821 (0.802) | 0.692 (0.638) | 0.798 (0.782) | 0.215 / 1.759 / 0.227 |
+| Criteo | LightGBM, default | all | 0.812 (0.795) | 0.612 (0.539) | 0.779 (0.765) | 0.248 / 6.737 / 0.271 |
+| Criteo | LightGBM, default | no calendar | 0.813 (0.802) | 0.805 (0.791) | 0.777 (0.760) | 0.247 / 0.289 / 0.272 |
+| Criteo | linear | all | 0.814 (0.794) | 0.754 (0.637) | 0.803 (0.791) | 0.217 / 11.091 / 0.229 |
+| Criteo | linear | no calendar | 0.814 (0.794) | 0.813 (0.804) | 0.804 (0.790) | 0.217 / 0.276 / 0.222 |
 
 ![ROC-AUC of TabPFN-3.5 per cutoff, by label policy and feature set](docs/label_delay.png)
 
-**What the numbers say.**
+- *The usual temporal split is optimistic, and the naive fix is worse than no fix.* With a
+  context of the most recent rows whose label has arrived, TabPFN-3.5 loses 0.115 ROC-AUC
+  on Olist (95% interval over cutoffs 0.055 to 0.179), 0.082 on NYC 311 (0.040 to 0.139)
+  and 0.153 on Criteo (0.124 to 0.181). The probabilities suffer more than the ranking: log
+  loss goes from 0.427 to 0.931 on NYC 311 and from 0.198 to 5.715 on Criteo.
+- *It is not specific to foundation models, and tuning does not remove it.* Tuned LightGBM
+  loses 0.091 on NYC 311 (0.028 to 0.189) and 0.157 on Criteo (0.133 to 0.183). On Olist
+  tuning weakens the loss from 0.071 to 0.044, and the interval then includes zero
+  (-0.005 to 0.095). The linear model loses 0.01 to 0.02 on Olist and NYC 311 and 0.060 on
+  Criteo.
+- *The damage goes through features that place a row inside the recent window.* The recent
+  rows that already have a label are almost all of the outcome that is labelled first, so
+  a model that sees the date learns "recent means that outcome" and applies it to the test
+  period. Without month and day-of-year the loss shrinks to about 0.02 on Olist and to
+  0.001 on NYC 311. On Criteo, where the label delay is 7 days, the weekday is enough to
+  place a row: without month and day-of-year TabPFN-3.5 stays at 0.656, and only without
+  any calendar feature does `known` recover (default LightGBM 0.805, linear 0.813). In
+  this grid the no-calendar feature set was run for default LightGBM and the linear model
+  only; TabPFN-3.5 without calendar features is in the next table.
+- *Waiting for labels (`gap`) is free on one dataset and costs accuracy on two.* Against
+  `oracle` it costs TabPFN-3.5 0.002 on NYC 311, 0.035 on Criteo (0.031 to 0.039) and
+  0.033 on Olist (interval -0.007 to 0.078, not separated from zero with 10 cutoffs).
+- *Model ranking.* Under `oracle` and `gap` TabPFN-3.5 is ahead of tuned LightGBM on all
+  three datasets (by 0.032 and 0.025 on Olist, 0.005 and 0.004 on NYC 311, 0.034 and 0.024
+  on Criteo). Under `known` with all features both collapse and neither is reliably ahead.
 
-1. *The usual temporal split is optimistic, and the naive fix is worse than no fix.* With a
-   context of the most recent rows whose label has arrived, TabPFN-3.5 loses 0.115 ROC-AUC
-   on Olist (95% interval over cutoffs 0.055 to 0.179) and 0.082 on NYC 311 (0.040 to
-   0.139), and falls to chance level at the worst cutoff (0.445 and 0.513). Default
-   LightGBM loses 0.071 and 0.090.
-2. *The damage goes through the calendar features.* Without month and day-of-year the loss
-   shrinks to under 0.02 on Olist and to 0.001 on NYC 311, for both model families. The rows from the
-   last weeks before a cutoff that already have a label are almost all on-time ones, so a model
-   that sees the date learns "recent means on time" and applies it to the test period.
-3. *It is not specific to foundation models.* TabPFN-3.5 and LightGBM break in the same
-   place by a similar amount; the linear model moves by 0.02 or less.
-4. *Waiting for labels is free on one dataset and costs accuracy on the other.* Leaving out
-   the last days before the cutoff recovers everything on NYC 311 (0.800 against 0.802). On
-   Olist, where the late rate moves quickly, it still costs 0.033 (interval -0.008 to 0.078,
-   so not separated from zero with 10 cutoffs).
-5. *Model ranking.* TabPFN-3.5 is ahead of default LightGBM by 0.04 to 0.05 on Olist and
-   0.01 to 0.02 on NYC 311, except in the collapse in point 1, where the lead on Olist
-   disappears (0.002). Against the linear model the difference is within about 0.03
-   either way, and in the collapse TabPFN-3.5 is 0.073 (Olist) and 0.056 (NYC 311) behind it.
+**2. How far back the context should reach.** A second experiment fixes the feature set
+(no calendar features) and varies the length of the training window, measured in multiples
+of the label delay and ending at the latest usable row; up to 10,000 rows are sampled at
+random inside the window. TabPFN-3.5, seed 0 (`scripts/context_window.py`):
 
-**Limits.** Exploratory: LightGBM is untuned, the training set is fixed at 10,000 rows,
-there are two datasets, and the NYC 311 task is constructed here. The 10 cutoffs are
-consecutive and share training data, so the intervals understate the uncertainty. Which
-usable policy is best on Olist (`known` without calendar features, 0.715, or `gap`, 0.702)
-is not settled by these runs. Tuned runs with 5 seeds and a third dataset are in progress.
+| Dataset | Window | ROC-AUC oracle / known / gap | log loss oracle / known / gap | known - gap, ROC-AUC | known - gap, log loss | Rows |
+| --- | --- | --- | --- | --- | --- | --- |
+| Olist | 1.25x | 0.744 / 0.704 / 0.709 | 0.244 / 0.278 / 0.270 | -0.006 [-0.047, +0.030] | +0.009 [-0.023, +0.051] | 7,272 |
+| Olist | 2x | 0.735 / 0.717 / 0.705 | 0.248 / 0.263 / 0.259 | +0.011 [-0.021, +0.056] | +0.005 [-0.016, +0.036] | 9,876 |
+| Olist | 3x | 0.737 / 0.719 / 0.696 | 0.244 / 0.250 / 0.264 | +0.023 [+0.005, +0.044] | -0.014 [-0.022, -0.007] | 10,000 |
+| Olist | 4x | 0.728 / 0.711 / 0.683 | 0.251 / 0.259 / 0.271 | +0.027 [+0.005, +0.053] | -0.011 [-0.023, -0.002] | 10,000 |
+| Olist | all history | 0.714 / 0.691 / 0.686 | 0.257 / 0.265 / 0.266 | +0.006 [-0.006, +0.021] | -0.002 [-0.010, +0.006] | 10,000 |
+| NYC 311 | 1.25x | 0.794 / 0.782 / 0.793 | 0.434 / 0.532 / 0.438 | -0.011 [-0.019, -0.004] | +0.094 [+0.059, +0.128] | 2,568 |
+| NYC 311 | 2x | 0.797 / 0.794 / 0.797 | 0.433 / 0.456 / 0.434 | -0.003 [-0.006, -0.001] | +0.021 [+0.011, +0.032] | 4,290 |
+| NYC 311 | 3x | 0.800 / 0.798 / 0.798 | 0.430 / 0.441 / 0.435 | +0.000 [-0.002, +0.002] | +0.005 [-0.002, +0.012] | 6,521 |
+| NYC 311 | 4x | 0.801 / 0.799 / 0.799 | 0.431 / 0.438 / 0.436 | +0.001 [-0.000, +0.001] | +0.002 [-0.004, +0.009] | 8,376 |
+| NYC 311 | all history | 0.793 / 0.793 / 0.791 | 0.436 / 0.437 / 0.436 | +0.002 [-0.001, +0.004] | +0.001 [-0.001, +0.002] | 10,000 |
+| Criteo | 1.25x | 0.846 / 0.812 / 0.826 | 0.205 / 0.300 / 0.215 | -0.014 [-0.021, -0.007] | +0.086 [+0.079, +0.093] | 9,480 |
+| Criteo | 2x | 0.842 / 0.826 / 0.828 | 0.206 / 0.228 / 0.214 | -0.001 [-0.007, +0.004] | +0.014 [+0.012, +0.016] | 10,000 |
+| Criteo | 3x | 0.841 / 0.831 / 0.828 | 0.207 / 0.220 / 0.213 | +0.003 [-0.001, +0.006] | +0.007 [+0.003, +0.010] | 10,000 |
+| Criteo | 4x | 0.839 / 0.830 / 0.830 | 0.208 / 0.220 / 0.213 | +0.001 [-0.003, +0.005] | +0.007 [+0.003, +0.010] | 10,000 |
+| Criteo | all history | 0.838 / 0.830 / 0.830 | 0.208 / 0.220 / 0.213 | +0.000 [-0.004, +0.005] | +0.007 [+0.003, +0.010] | 10,000 |
+
+Differences are paired per cutoff with a bootstrap 95% interval over cutoffs; lower log
+loss is better. "Rows" is the mean number of training rows over policies and cutoffs.
+
+![ROC-AUC against the length of the training window](docs/context_window.png)
+
+- *A window no longer than the label delay cannot use `known` at all.* Below 1x it holds a
+  single class; at 1x default LightGBM scores 0.600 on Criteo, 0.625 on NYC 311 and 0.629
+  on Olist, with the calendar features already removed. Removing the date is not enough if
+  the window is too short.
+- *From about 2 to 3 times the label delay, `known` recovers.* For TabPFN-3.5 the distance
+  to `oracle` at 3x is 0.018 on Olist, 0.002 on NYC 311 and 0.010 on Criteo. Default
+  LightGBM follows the same curve (dashed lines in the figure).
+- *Not waiting beats waiting only where waiting costs.* On Olist, at 3x and 4x, `known` is
+  ahead of `gap` in ROC-AUC (+0.023 and +0.027) and in log loss. On NYC 311 the two are
+  equal from 3x. On Criteo they are equal in ROC-AUC for TabPFN-3.5 and `known` is worse in
+  log loss at every window (+0.007 from 3x): its context holds too many positives, so the
+  ranking is fine and the probabilities are too high. Default LightGBM on Criteo does gain
+  from `known` (+0.011 ROC-AUC, -0.009 log loss at 3x, three seeds), so this point differs
+  by model.
+- *More history is not better on Olist.* With every label known, TabPFN-3.5 scores 0.737
+  from the last 90 days and 0.714 from a sample of the whole history.
+
+**Limits.** Exploratory. Tuning uses 20 trials, not the 50 of the protocol, and only
+LightGBM is tuned. The window experiment has one seed for TabPFN-3.5 and no tuned GBDT. On
+NYC 311 a short window holds fewer rows (2,568 at 1.25x, 8,376 at 4x), so window length and
+training size are confounded there. The training set never exceeds 10,000 rows. The NYC 311
+and Criteo tasks are constructed here, and Criteo is a 2% sample of users over 31 days. The
+10 cutoffs are consecutive and share training data, so the intervals understate the
+uncertainty. No correction method from the delayed-feedback literature (such as importance
+weighting) is compared yet.
 
 **Relation to earlier work.** That delayed feedback biases recent training data is well
 known in conversion prediction (Chapelle 2014; Yang et al. 2021, arXiv 2012.03245; Gu et
@@ -242,20 +311,29 @@ al. 2021, arXiv 2104.14121) and fraud detection (Dal Pozzolo et al. 2015). Work 
 foundation models under label delay so far uses a fixed delay that is the same for every
 row (arXiv 2610.05352), which cannot produce this bias. What this study adds is a
 measurement on business tables with real label arrival times, for an in-context model and
-a GBDT side by side, and the observation that the calendar features carry the damage.
+a GBDT side by side, the observation that calendar features carry the damage, and the
+window length relative to the label delay as the quantity that decides whether recent
+labelled rows can be used.
 
-**Reproduce.** The tables and the figure come from the CSVs in `results/label_delay/`:
+**Reproduce.** The tables and figures come from the CSVs in `results/label_delay/`:
 
 ```bash
-python scripts/prepare_nyc311.py           # NYC 311 sample; Olist as in "Data"
-tfmbench --dataset olist --task late_delivery --split temporal --n-folds 10 --test-size 0.06 \
-  --seeds 0 1 2 --n-trials 0 --models tabpfn --max-train-rows 10000 --train-sample recent \
-  --label-policy known --label-gap-days 30 --out results/label_delay/untuned_olist_late_delivery.csv
-python scripts/summarize_label_delay.py results/label_delay/untuned_*.csv --plot docs/label_delay.png
+python scripts/prepare_nyc311.py           # NYC 311 sample; Olist and Criteo as in "Data"
+python scripts/prepare_criteo.py
+# grid: <dataset> <task> <label delay in days> <Optuna trials> "<seeds>" <models>
+bash scripts/label_delay_grid.sh olist late_delivery 30 0 "0 1 2" tabpfn
+SAMPLES=recent bash scripts/label_delay_grid.sh olist late_delivery 30 20 "0 1 2" lightgbm
+python scripts/context_window.py --dataset olist --task late_delivery --gap-days 30
+python scripts/context_window.py --dataset olist --task late_delivery --gap-days 30 \
+  --models tabpfn --seeds 0 --ratios 1.25 2 3 4 inf --feats nodate
+python scripts/summarize_label_delay.py results/label_delay/untuned_*.csv \
+  results/label_delay/tuned_*.csv --plot docs/label_delay.png
+python scripts/summarize_label_delay.py results/label_delay/window_*.csv \
+  --plot-window docs/context_window.png
 ```
 
-On macOS run TabPFN in its own process: after LightGBM has run in the same process the two
-OpenMP runtimes can deadlock.
+The summary script reads seeds 0 to 2 by default. On macOS run TabPFN in its own process:
+after LightGBM has run in the same process the two OpenMP runtimes can deadlock.
 
 ## Notes
 
