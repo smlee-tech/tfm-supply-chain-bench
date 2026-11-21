@@ -296,14 +296,44 @@ loss is better. "Rows" is the mean number of training rows over policies and cut
 - *More history is not better on Olist.* With every label known, TabPFN-3.5 scores 0.737
   from the last 90 days and 0.714 from a sample of the whole history.
 
+**3. Correcting the probabilities of `known`.** Without calendar features the selection
+of labelled rows depends on the outcome, which is label shift, so the predicted odds of a
+model trained on `known` can be rescaled by the ratio of the true to the training positive
+rate. The true rate is estimated from the rows old enough to be fully labelled
+(`scripts/prior_correction.py`). The correction is monotone, so ROC-AUC does not change.
+Mean log loss at a window of 3 times the label delay (TabPFN-3.5 seed 0, others 3 seeds):
+
+| Dataset | Model | oracle | known | gap | known, corrected | corrected - gap |
+| --- | --- | --- | --- | --- | --- | --- |
+| Olist | TabPFN-3.5 | 0.244 | 0.250 | 0.264 | 0.259 | -0.005 [-0.020, +0.011] |
+| Olist | LightGBM, default | 0.263 | 0.282 | 0.290 | 0.284 | -0.006 [-0.017, +0.003] |
+| Olist | linear | 0.249 | 0.258 | 0.269 | 0.266 | -0.003 [-0.013, +0.009] |
+| NYC 311 | TabPFN-3.5 | 0.430 | 0.441 | 0.435 | 0.433 | -0.002 [-0.009, +0.002] |
+| NYC 311 | LightGBM, default | 0.452 | 0.472 | 0.458 | 0.464 | +0.006 [-0.001, +0.012] |
+| NYC 311 | linear | 0.432 | 0.443 | 0.437 | 0.436 | -0.002 [-0.008, +0.004] |
+| Criteo | TabPFN-3.5 | 0.207 | 0.220 | 0.213 | 0.212 | -0.001 [-0.003, +0.001] |
+| Criteo | LightGBM, default | 0.246 | 0.244 | 0.253 | 0.240 | -0.013 [-0.017, -0.009] |
+| Criteo | linear | 0.218 | 0.224 | 0.218 | 0.217 | -0.001 [-0.002, -0.000] |
+
+- *At 3x, corrected `known` is never separably worse than `gap`.* On Criteo the correction
+  removes the calibration loss of `known` for TabPFN-3.5 (0.220 to 0.212, level with `gap`)
+  and puts default LightGBM ahead of `gap`.
+- *It is not a general fix.* On Olist the estimated positive rate is stale (0.088 against
+  0.077 in the test period) and the correction makes `known` slightly worse; uncorrected
+  `known` is the best usable option there. With the true rate of the window, which is not
+  available in practice, TabPFN-3.5 reaches 0.248.
+- *It does not replace the longer window.* At 1.25x the correction removes most of the
+  damage for TabPFN-3.5 (Criteo 0.300 to 0.227, NYC 311 0.532 to 0.444) but stays behind
+  `gap` on Criteo (0.215), because the ranking is worse too.
+
 **Limits.** Exploratory. Tuning uses 20 trials, not the 50 of the protocol, and only
 LightGBM is tuned. The window experiment has one seed for TabPFN-3.5 and no tuned GBDT. On
 NYC 311 a short window holds fewer rows (2,568 at 1.25x, 8,376 at 4x), so window length and
 training size are confounded there. The training set never exceeds 10,000 rows. The NYC 311
 and Criteo tasks are constructed here, and Criteo is a 2% sample of users over 31 days. The
 10 cutoffs are consecutive and share training data, so the intervals understate the
-uncertainty. No correction method from the delayed-feedback literature (such as importance
-weighting) is compared yet.
+uncertainty. The only correction tried is the prior rescaling above; methods from the
+delayed-feedback literature (such as importance weighting) are not compared yet.
 
 **Relation to earlier work.** That delayed feedback biases recent training data is well
 known in conversion prediction (Chapelle 2014; Yang et al. 2021, arXiv 2012.03245; Gu et
@@ -330,6 +360,8 @@ python scripts/summarize_label_delay.py results/label_delay/untuned_*.csv \
   results/label_delay/tuned_*.csv --plot docs/label_delay.png
 python scripts/summarize_label_delay.py results/label_delay/window_*.csv \
   --plot-window docs/context_window.png
+python scripts/prior_correction.py --dataset olist --task late_delivery --gap-days 30
+python scripts/summarize_label_delay.py results/label_delay/prior_*.csv
 ```
 
 The summary script reads seeds 0 to 2 by default. On macOS run TabPFN in its own process:

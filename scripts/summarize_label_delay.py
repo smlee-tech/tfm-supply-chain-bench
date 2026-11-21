@@ -5,11 +5,14 @@ Usage:
       results/label_delay/tuned_*.csv [--plot docs/label_delay.png]
   python scripts/summarize_label_delay.py results/label_delay/window_*.csv \
       [--plot-window docs/context_window.png]
+  python scripts/summarize_label_delay.py results/label_delay/prior_*.csv
 
 Grid CSVs (untuned_*, tuned_*) hold one dataset/task run with --split temporal over
 train sample (recent, random) x label policy (oracle, known, gap) x feature set. Window
 CSVs (window_*, from scripts/context_window.py) add the length of the training window as a
-multiple of the label delay. The two kinds are told apart by the `window_ratio` column.
+multiple of the label delay. Prior CSVs (prior_*, from scripts/prior_correction.py) hold
+the prior-shift correction of `known`. The kinds are told apart by their columns
+(`variant` for prior CSVs, `window_ratio` for window CSVs).
 
 Feature sets: all; "no month/day-of-year" (without pred_month, pred_dayofyear); "no
 calendar" (also without pred_dayofweek).
@@ -34,6 +37,8 @@ COLORS = {"oracle": "#4c4c4c", "known": "#d1495b", "gap": "#2e86ab"}
 
 def load(path: str, seeds: list[int]) -> pd.DataFrame:
     df = pd.read_csv(path)
+    if "variant" in df.columns:  # prior-correction CSV: always without calendar features
+        return df[df["seed"].isin(seeds)]
     drop = df["drop_cols"].fillna("")
     df["features"] = np.where(drop == "", FEATURES[0],
                               np.where(drop.str.contains("pred_dayofweek"), FEATURES[2],
@@ -134,6 +139,31 @@ def window_tables(df: pd.DataFrame) -> None:
                       f"{rows.loc[(model, features, ratio)]:,.0f} |")
 
 
+def prior_tables(df: pd.DataFrame) -> None:
+    name = f"{df['dataset'].iloc[0]} / {df['task'].iloc[0]}"
+    print(f"\n### Prior-shift correction: {name} ({df['fold'].nunique()} cutoffs, seeds per "
+          f"model: {seeds_by_model(df)}; no calendar features, untuned)\n")
+    variants = ["oracle", "known", "gap", "known+mature", "known+oracle"]
+    ll = (df.groupby(["model", "window_ratio", "fold", "variant"])["log_loss"].mean()
+          .unstack("variant")[variants])
+    ece = df.groupby(["model", "window_ratio", "variant"])["ece"].mean().unstack("variant")
+    rng = np.random.default_rng(0)
+    print("known+mature: prior from the rows old enough to be fully labelled; known+oracle: "
+          "true prior of the window (not usable in practice). ROC-AUC is unchanged by the "
+          "correction.\n")
+    print("| Model | Window | log loss oracle / known / gap / known+mature / known+oracle "
+          "| known+mature - gap | known+mature - known | ECE known / gap / known+mature |")
+    print("| --- | --- | --- | --- | --- | --- |")
+    for model in ordered(ll.index.get_level_values("model"), MODELS):
+        for ratio in sorted(ll.loc[model].index.get_level_values("window_ratio").unique()):
+            g, e = ll.loc[(model, ratio)], ece.loc[(model, ratio)]
+            print(f"| {model} | {ratio_label(ratio)} | "
+                  + " / ".join(f"{g[v].mean():.3f}" for v in variants) + " | "
+                  + paired((g["known+mature"] - g["gap"]).to_numpy(), rng) + " | "
+                  + paired((g["known+mature"] - g["known"]).to_numpy(), rng) + " | "
+                  + " / ".join(f"{e[v]:.3f}" for v in ["known", "gap", "known+mature"]) + " |")
+
+
 def plot(frames: list[pd.DataFrame], out: str) -> None:
     import matplotlib.pyplot as plt
 
@@ -199,12 +229,16 @@ def main() -> None:
     ap.add_argument("--plot-window", help="write the window-length figure to this PNG")
     args = ap.parse_args()
     frames = [load(p, args.seeds) for p in args.paths]
-    grids = [df for df in frames if "window_ratio" not in df.columns]
-    windows = [df for df in frames if "window_ratio" in df.columns]
+    priors = [df for df in frames if "variant" in df.columns]
+    rest = [df for df in frames if "variant" not in df.columns]
+    grids = [df for df in rest if "window_ratio" not in df.columns]
+    windows = [df for df in rest if "window_ratio" in df.columns]
     for df in grids:
         tables(df)
     for df in windows:
         window_tables(df)
+    for df in priors:
+        prior_tables(df)
     if args.plot:
         plot(grids, args.plot)
     if args.plot_window:
